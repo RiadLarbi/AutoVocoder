@@ -46,19 +46,6 @@ def spectral_de_normalize_torch(magnitudes):
     return output
     
     
-def f0_to_one_hot(f0_hz, n_bins=513, sample_rate=22050, n_fft=1024):
-
-    B, T = f0_hz.shape
-
-    freq_bins = torch.linspace(0, sample_rate // 2, steps=n_bins, device=f0_hz.device)  # (N,)
-    f0_bin_idx = torch.bucketize(f0_hz, freq_bins)  # (B, T), gives index in range [0, N]
-    f0_bin_idx = torch.clamp(f0_bin_idx, 0, n_bins - 1)
-
-    one_hot = torch.zeros(B, n_bins, T, device=f0_hz.device)
-    for b in range(B):
-        one_hot[b].scatter_(0, f0_bin_idx[b].unsqueeze(0), 1.0)
-
-    return one_hot
 
 
 def extract_f0(audio, sampling_rate, hop_size, f0_min=80, f0_max=750, frame_length=1024):

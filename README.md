@@ -24,7 +24,8 @@ PAcodec enhances the AutoVocoder in the following key ways:
 ---
 
 ##  Features
-![f0 data flow](https://github.com/user-attachments/assets/2e2ac8d5-53e9-446d-ab94-b2afa57c9111)
+![f0 data flow](https://github.com/user-attachments/assets/0b9ee607-175a-4e80-a2a1-be840785e565)
+
 
 - **Spectral Input**: Phase, magnitude, and power spectrograms.
 - **F0 Integration**: Gaussian masking on frequency bins around the estimated F0.
@@ -55,9 +56,10 @@ cd PAcodec
 pip install -r requirements.txt
 ```
 
+
 ---
 
-## 🔧 Usage
+## Usage
 
 ### Training
 
@@ -73,18 +75,20 @@ python inference.py --input audio.wav
 
 ---
 
-## 📊 Evaluation
+##  Evaluation
+![Evaluation](https://github.com/user-attachments/assets/1c1d4f63-4672-4254-b699-8e122577a416)
 
-![VCTK_f0_comparison](https://github.com/user-attachments/assets/b181901f-63ef-4181-8195-f5e0f5764070)
+![f0 contour comaprison for male voice](https://github.com/user-attachments/assets/b181901f-63ef-4181-8195-f5e0f5764070)
 
-![LJSpeech_f0_comparison](https://github.com/user-attachments/assets/77013917-346f-43c9-93bd-e80a9bc44651)
+![f0 contour comparison for female voice](https://github.com/user-attachments/assets/77013917-346f-43c9-93bd-e80a9bc44651)
+
 
 
 
 
 ---
 
-## 📝 Citation
+## Citation
 
 If you use PAcodec in your research, please cite:
 

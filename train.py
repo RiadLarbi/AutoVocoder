@@ -120,14 +120,15 @@ def train(rank, a, h):
         for i, batch in enumerate(train_loader):
             if rank == 0:
                 start_b = time.time()
-            x, y, _, y_mel = batch
+            x, y, _, y_mel,f0 = batch
             x = torch.autograd.Variable(x.to(device, non_blocking=True))
+            f0 = torch.autograd.Variable(f0.to(device, non_blocking=True))
             y = torch.autograd.Variable(y.to(device, non_blocking=True))
             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
             y = y.unsqueeze(1)
             
             #forward
-            l = encoder(x.to(device))
+            l = encoder(x.to(device),f0.to(device))
             
             y_g_hat = generator(l)
 
@@ -208,9 +209,9 @@ def train(rank, a, h):
                     val_err_tot = 0
                     with torch.no_grad():
                         for j, batch in enumerate(validation_loader):
-                            x, y, _, y_mel = batch
+                            x, y, _, y_mel,f0 = batch
                                     
-                            l = encoder(x.to(device))                    
+                            l = encoder(x.to(device),f0.to(device))                    
                             y_g_hat = generator(l)
 
                             y_mel = torch.autograd.Variable(y_mel.to(device, non_blocking=True))
@@ -255,8 +256,8 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--group_name', default=None)
-    parser.add_argument('--input_wavs_dir', default='/home/hcy71/DATA/LJSpeech-1.1/wavs')
-    parser.add_argument('--data_path', default='/home/hcy71/DATA')
+    parser.add_argument('--input_wavs_dir', default='/ria/AutoVocoder/LJSpeech-1.1/wavs')
+    parser.add_argument('--data_path', default='/ria/AutoVocoder/')
     parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
     parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_autovocoder')

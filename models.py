@@ -9,25 +9,92 @@ from stft import TorchSTFT
 LRELU_SLOPE = 0.1
 
 
-class ResBlock(torch.nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.convs = nn.ModuleList([
-            Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-            BatchNorm2d(out_ch),
-            nn.ReLU()
-        ])
-        self.out_ch = out_ch
-        self.in_ch = in_ch
+
+
+def conv3x3(in_planes, out_planes, stride=1):
+    "3x3 convolution with padding"
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
+class ChannelAttention(nn.Module):
+    def __init__(self, in_planes, ratio=16):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+           
+        self.fc = nn.Sequential(nn.Conv2d(in_planes, in_planes, 1, bias=False),
+                               nn.ReLU(),
+                               nn.Conv2d(in_planes, in_planes, 1, bias=False))
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        for c in self.convs:
-            res = c(x)
-            if self.out_ch == self.in_ch:
-                x = res + x
-            else:
-                x = res
-        return x
+        
+        avg_out = self.fc(self.avg_pool(x))
+        max_out = self.fc(self.max_pool(x))
+
+        out = avg_out + max_out
+        return self.sigmoid(out)
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super(SpatialAttention, self).__init__()
+
+        self.conv1 = nn.Conv2d(2, 1, kernel_size, padding=kernel_size//2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        x = torch.cat([avg_out, max_out], dim=1)
+        x = self.conv1(x)
+        return self.sigmoid(x)
+
+class ResBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_ch, out_ch, stride=1, downsample=None):
+        super(ResBlock, self).__init__()
+        self.in_ch=in_ch
+        self.out_ch=out_ch
+        self.conv1 = conv3x3(in_ch, out_ch)
+        self.bn1 = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU()
+        self.conv2 = conv3x3(out_ch, out_ch)
+        self.bn2 = nn.BatchNorm2d(out_ch)
+
+        self.ca = ChannelAttention(out_ch)
+        self.sa = SpatialAttention()
+
+        self.downsample = downsample
+        self.stride = stride
+        self.down_conv=conv3x3(in_ch,out_ch)
+    def forward(self, x):
+        residual = x
+
+
+        out = self.conv1(x)
+
+        out = self.bn1(out)
+        
+        out = self.relu(out)
+
+        out = self.conv2(out)
+
+        out = self.bn2(out)
+
+        out = self.ca(out) * out
+        
+        out = self.sa(out) * out
+
+        if self.in_ch == self.out_ch:
+            out = residual + out
+            out = self.relu(out)
+        else:
+            out = self.relu(out + self.down_conv(residual))
+
+        return out
+    
+
     
 class Encoder(torch.nn.Module):
     def __init__(self, h):
@@ -37,27 +104,81 @@ class Encoder(torch.nn.Module):
         middle = h.n_blocks//2 + 1
         for i in range(1, h.n_blocks+1):
             if i < middle:
-                self.encs.append(ResBlock(4,4))
+                self.encs.append(ResBlock(3,3))
             elif i == middle:
-                self.encs.append(ResBlock(4,1))
-            else:
-                self.encs.append(ResBlock(1,1))
-                
+                self.encs.append(ResBlock(3,1))
+
+
+        self.encs_masked = nn.ModuleList()
+        for i in range(2):
+            self.encs_masked.append(ResBlock(3,3))
+        self.encs_masked.append(ResBlock(3,1))
+            
+        self.final_encs = nn.ModuleList()
+
+        self.final_encs.append(ResBlock(2,1))
+        for i in range(5):
+            self.final_encs.append(ResBlock(1,1))
+            s
+
+
         self.linear = nn.Linear(h.win_size//2+1,h.latent_dim)
         self.dropout = nn.Dropout(h.latent_dropout)
-    
-    def forward(self, x):
-        # x: (B, 4, N, T)
-        for enc_block in self.encs:
-            x = enc_block(x)
+
+    def apply_f0_mask(self, x, f0, sample_rate=22050, n_fft=1024, sigma=2.0):
+        f0=f0.squeeze(1)
+        # Extract tensor dimensions and device
+        batch_size, channels, n_freq_bins, time_steps = x.shape
+        device = x.device
         
-        x = x.squeeze(1).transpose(1,2) # (B, 1, N, T) -> (B, T, N)
-        x = self.linear(x)
+        # Convert f0 from Hz to frequency bin indices
+        hz_per_bin = sample_rate / n_fft
+        f0_bins = f0 / hz_per_bin  # Shape: (B, T)  
+        # Create frequency bin indices tensor
+        freq_indices = torch.arange(n_freq_bins, device=device).view(1, 1, n_freq_bins)  # Shape: (1, 1, N)
+              
+        # Reshape f0_bins for broadcasting
+        f0_bins = f0_bins.unsqueeze(-1)  # Shape: (B, T, 1)
+        
+        # Create Gaussian mask centered at f0_bins
+        # exp(-((x - μ)² / (2σ²)))
+        gaussian_mask = torch.exp(-((freq_indices - f0_bins) ** 2) / (2 * sigma ** 2))  # Shape: (B, T, N)
+        
+        # Reshape mask to match the input tensor dimensions
+        # From (B, T, N) to (B, 1, N, T)
+
+        mask = gaussian_mask.permute(0, 2, 1).unsqueeze(1)  # Shape: (B, 1, N, T)
+        
+        
+        # Broadcasting: The mask has shape (B, 1, N, T) and will be broadcast to (B, C, N, T)
+        # This applies the same mask to all channels
+        masked_output= x * mask
+
+
+
+
+        return masked_output
+
+    def forward(self, x,f0):
+        # x: (B, 4, N, T)
+        masked_x=self.apply_f0_mask(x,f0)
+        for enc_block in self.encs:
+          x = enc_block(x)
+
+        for block in self.encs_masked:
+            masked_x=block(masked_x)
+        
+        z=torch.cat([x,masked_x],dim=1)
+        for block in self.final_encs:
+            z=block(z)
+        
+        z = z.squeeze(1).transpose(1,2) # (B, 1, N, T) -> (B, T, N)
+        z = self.linear(z)
         #! Apply dropout (according to DAE) to increase decoder robustness,
         #! because representation predicted from AM is used in TTS application.
-        x = self.dropout(x)
+        z = self.dropout(z)
         
-        return x
+        return z
     
 class Generator(torch.nn.Module):
     def __init__(self, h):
@@ -75,11 +196,9 @@ class Generator(torch.nn.Module):
                 self.decs.append(ResBlock(4,4))
                 
         self.dec_istft_input = h.dec_istft_input
-        
-        if self.dec_istft_input == 'cartesian' or 'polar':
-            self.conv_post = Conv2d(4,2,3,1,padding=1) # Predict Real/Img (default) or Magitude/Phase
-        elif self.dec_istft_input == 'both':
-            self.conv_post = Conv2d(4,4,3,1,padding=1) # Predict Real/ImgMagitude/Phase
+
+        self.conv_post = Conv2d(4,2,3,1,padding=1) # Predict Real/Img (default) or Magitude/Phase
+
         
         self.reflection_pad = nn.ReflectionPad1d((1, 0))
         self.stft = TorchSTFT(filter_length=h.n_fft, hop_length=h.hop_size, win_length=h.win_size)
@@ -100,20 +219,12 @@ class Generator(torch.nn.Module):
         # (B, 4, N, T') -> (B, 2, N, T') (default) or (B, 4, N, T')
         x = self.conv_post(x)
         
-        if self.dec_istft_input == 'cartesian': #! default
-            real = x[:,0,:,:]
-            imag = x[:,1,:,:]
-            wav = self.stft.cartesian_inverse(real, imag)
-        elif self.dec_istft_input == 'polar':
-            magnitude = x[:,0,:,:]
-            phase = x[:,1,:,:]
-            wav = self.stft.polar_inverse(magnitude, phase)
-        elif self.dec_istft_input == 'both':
-            real = x[:,0,:,:]
-            imag = x[:,1,:,:]
-            magnitude = x[:,2,:,:]
-            phase = x[:,3,:,:]
-            wav = self.stft.both_inverse(real, imag, magnitude, phase)
+
+
+        magnitude = x[:,0,:,:]
+        phase = x[:,1,:,:]
+        wav = self.stft.polar_inverse(magnitude, phase)
+
             
         return wav
 
@@ -272,4 +383,3 @@ def generator_loss(disc_outputs):
         loss += l
 
     return loss, gen_losses
-
